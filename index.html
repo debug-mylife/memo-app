@@ -123,6 +123,20 @@
   .note-item-preview{font-size:12px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:5px;}
   .note-item-date{font-family:'IBM Plex Mono', monospace; font-size:10.5px; color:var(--ink-soft); opacity:0.75;}
   .empty-list{padding:40px 16px; text-align:center; color:var(--ink-soft); font-size:13px; line-height:1.7;}
+  .memo-filter-chip{
+    display:flex; align-items:center; gap:10px; background:#E7EDE2; border:1px solid var(--moss);
+    color:var(--moss-dark); border-radius:8px; padding:8px 10px; margin:0 4px 10px; font-size:11.5px;
+  }
+  .memo-filter-chip span{flex:1;}
+  .memo-filter-chip button{background:none; border:none; cursor:pointer; color:var(--moss-dark); font-family:inherit; font-size:11px; text-decoration:underline;}
+  .note-item-linked-date{
+    display:inline-flex; align-items:center; gap:3px; margin-left:8px; color:var(--moss-dark);
+    font-family:'IBM Plex Mono', monospace; font-size:10px;
+  }
+  .note-item-linked-date svg{width:11px;height:11px; stroke:currentColor;}
+  .link-date-btn{display:flex; align-items:center; gap:4px; font-family:'IBM Plex Mono',monospace; font-size:11px;}
+  .link-date-btn.active{background:#E7EDE2; color:var(--moss-dark);}
+  .link-date-btn svg{width:15px;height:15px;}
   .sidebar-foot{padding:12px 18px; border-top:1px solid var(--line); display:flex; gap:8px;}
   .foot-btn{flex:1; background:none; border:1px solid var(--line); border-radius:7px; padding:7px 8px; font-family:inherit; font-size:12px; color:var(--ink-soft); cursor:pointer; transition:all .15s ease;}
   .foot-btn:hover{border-color:var(--moss); color:var(--moss-dark);}
@@ -184,6 +198,7 @@
   .cal-panel{width:280px; flex-shrink:0; border-left:1px solid var(--line); background:var(--paper-raised); padding:22px 20px; overflow-y:auto;}
   .cal-panel-date{font-family:'Fraunces',serif; font-weight:600; font-size:18px; margin:0;}
   .cal-panel-header{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px;}
+  .cal-link-btns{display:flex; gap:6px; flex-shrink:0;}
   .cal-money-link{
     display:flex; align-items:center; gap:5px; padding:5px 9px; border:1px solid var(--line);
     background:var(--paper); border-radius:7px; font-family:inherit; font-size:11.5px; color:var(--ink-soft);
@@ -427,11 +442,13 @@
   }
   function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-  function createNote(){
-    const note = { id: uid(), title:'', body:'', color: SPINE_COLORS[0], updatedAt: Date.now(), createdAt: Date.now() };
+  let memoFocusDate = null;
+
+  function createNote(presetDate){
+    const note = { id: uid(), title:'', body:'', color: SPINE_COLORS[0], linkedDate: presetDate || null, updatedAt: Date.now(), createdAt: Date.now() };
     notes.unshift(note);
     activeId = note.id;
-    persist(); renderList(); renderEditor(); focusTitle();
+    persist(); renderList(searchInput.value); renderEditor(); focusTitle();
   }
   function deleteNote(id){
     const note = notes.find(n => n.id === id);
@@ -464,28 +481,45 @@
     if(sameDay) return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
     return (d.getMonth()+1) + '/' + d.getDate();
   }
+  function formatShortDate(dateStr){
+    const d = new Date(dateStr + 'T00:00:00');
+    return (d.getMonth()+1) + '/' + d.getDate();
+  }
   function renderList(filter){
     filter = (filter || '').trim().toLowerCase();
     const sorted = [...notes].sort((a,b) => b.updatedAt - a.updatedAt);
-    const filtered = filter ? sorted.filter(n => (n.title + ' ' + n.body).toLowerCase().includes(filter)) : sorted;
+    let filtered = filter ? sorted.filter(n => (n.title + ' ' + n.body).toLowerCase().includes(filter)) : sorted;
+    if(memoFocusDate) filtered = filtered.filter(n => n.linkedDate === memoFocusDate);
+
+    const chipHtml = memoFocusDate
+      ? '<div class="memo-filter-chip"><span>' + formatShortDate(memoFocusDate) + 'に紐づくメモのみ表示中</span><button id="memo-filter-clear">✕ すべて表示</button></div>'
+      : '';
+
     if(filtered.length === 0){
-      noteListEl.innerHTML = '<div class="empty-list">' +
-        (notes.length === 0 ? 'まだメモがありません。<br>「新規メモ」から作成しましょう。' : '一致するメモが見つかりません。') +
+      noteListEl.innerHTML = chipHtml + '<div class="empty-list">' +
+        (memoFocusDate ? 'この日に紐づくメモはまだありません。' : (notes.length === 0 ? 'まだメモがありません。<br>「新規メモ」から作成しましょう。' : '一致するメモが見つかりません。')) +
         '</div>';
+      const clearBtn0 = document.getElementById('memo-filter-clear');
+      if(clearBtn0) clearBtn0.addEventListener('click', () => { memoFocusDate = null; renderList(searchInput.value); });
       return;
     }
-    noteListEl.innerHTML = filtered.map(n => {
+    noteListEl.innerHTML = chipHtml + filtered.map(n => {
       const title = n.title ? escapeHtml(n.title) : '(無題のメモ)';
       const preview = escapeHtml((n.body || '').replace(/\n/g, ' ').slice(0, 60)) || ' ';
       const active = n.id === activeId ? ' active' : '';
+      const dateBadge = n.linkedDate
+        ? '<span class="note-item-linked-date" title="紐づけられた日付"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' + formatShortDate(n.linkedDate) + '</span>'
+        : '';
       return '<div class="note-item' + active + '" data-id="' + n.id + '">' +
         '<div class="note-spine" style="background:' + n.color + '"></div>' +
         '<div class="note-item-body">' +
           '<div class="note-item-title' + (n.title ? '' : ' empty') + '">' + title + '</div>' +
           '<div class="note-item-preview">' + preview + '</div>' +
-          '<div class="note-item-date">' + formatDate(n.updatedAt) + '</div>' +
+          '<div class="note-item-date">' + formatDate(n.updatedAt) + dateBadge + '</div>' +
         '</div></div>';
     }).join('');
+    const clearBtn = document.getElementById('memo-filter-clear');
+    if(clearBtn) clearBtn.addEventListener('click', () => { memoFocusDate = null; renderList(searchInput.value); });
     noteListEl.querySelectorAll('.note-item').forEach(el => {
       el.addEventListener('click', () => {
         activeId = el.getAttribute('data-id');
@@ -503,6 +537,10 @@
       '<div class="editor-toolbar">' +
         '<button class="mobile-back" id="back-btn"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg> 一覧へ</button>' +
         '<div class="spine-picker" id="spine-picker"></div>' +
+        '<button class="icon-btn link-date-btn' + (note.linkedDate ? ' active' : '') + '" id="link-date-btn" title="日付を紐づける">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' +
+          (note.linkedDate ? formatShortDate(note.linkedDate) : '') +
+        '</button>' +
         '<div class="save-status" id="save-status"><span class="dot"></span>保存済み</div>' +
         '<button class="icon-btn" id="delete-btn" title="削除"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>' +
       '</div>' +
@@ -518,8 +556,32 @@
     document.getElementById('title-input').addEventListener('input', e => updateActiveNote({title: e.target.value}));
     document.getElementById('body-input').addEventListener('input', e => updateActiveNote({body: e.target.value}));
     document.getElementById('delete-btn').addEventListener('click', () => deleteNote(note.id));
+    document.getElementById('link-date-btn').addEventListener('click', () => openLinkDateModal(note));
     const backBtn = document.getElementById('back-btn');
     if(backBtn) backBtn.addEventListener('click', () => memoAppEl.classList.remove('mobile-editing'));
+  }
+
+  function openLinkDateModal(note){
+    const rows =
+      '<input type="date" id="link-date-input" value="' + (note.linkedDate || '') + '" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-family:inherit; font-size:14px; margin-top:4px;">' +
+      '<p class="modal-note">紐づけると、カレンダーのその日のページから、このメモを開けるようになります。</p>';
+    openModal('日付を紐づける', rows, '保存', (overlay) => {
+      const val = overlay.querySelector('#link-date-input').value;
+      updateActiveNote({linkedDate: val || null});
+      renderEditor(); renderList(searchInput.value);
+    });
+    if(note.linkedDate){
+      const overlay = document.querySelector('.modal-overlay');
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'modal-btn';
+      clearBtn.textContent = '紐づけを解除';
+      clearBtn.addEventListener('click', () => {
+        updateActiveNote({linkedDate: null});
+        renderEditor(); renderList(searchInput.value);
+        overlay.remove();
+      });
+      overlay.querySelector('.modal-actions').prepend(clearBtn);
+    }
   }
   function closeModal(overlay){ overlay.remove(); }
   function openModal(titleText, rowsHtml, confirmLabel, onConfirm){
@@ -638,8 +700,8 @@
     });
   }
 
-  document.getElementById('new-btn').addEventListener('click', createNote);
-  document.getElementById('empty-new-btn').addEventListener('click', createNote);
+  document.getElementById('new-btn').addEventListener('click', () => createNote(memoFocusDate));
+  document.getElementById('empty-new-btn').addEventListener('click', () => createNote(memoFocusDate));
   document.getElementById('export-btn').addEventListener('click', openExportModal);
   document.getElementById('import-btn').addEventListener('click', () => document.getElementById('import-file').click());
   document.getElementById('import-file').addEventListener('change', e => { if(e.target.files[0]) importAll(e.target.files[0]); e.target.value=''; });
@@ -761,10 +823,16 @@
     panel.innerHTML =
       '<div class="cal-panel-header">' +
         '<p class="cal-panel-date">' + dateLabel + ' <span style="font-weight:400;font-size:14px;">' + wdLabel + '</span></p>' +
-        '<button class="cal-money-link" id="cal-money-link" title="この日の家計簿を見る">' +
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 8.5h4a2 2 0 0 1 0 4H9"/><path d="M9 12.5h5"/></svg>' +
-          '家計簿' +
-        '</button>' +
+        '<div class="cal-link-btns">' +
+          '<button class="cal-money-link" id="cal-memo-link" title="この日に紐づくメモを見る">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' +
+            'メモ' +
+          '</button>' +
+          '<button class="cal-money-link" id="cal-money-link" title="この日の家計簿を見る">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 8.5h4a2 2 0 0 1 0 4H9"/><path d="M9 12.5h5"/></svg>' +
+            '家計簿' +
+          '</button>' +
+        '</div>' +
       '</div>' +
       '<p class="cal-panel-sub">' + dayEvents.length + '件の予定</p>' +
       '<div id="cal-event-list">' + listHtml + '</div>' +
@@ -776,6 +844,7 @@
       '</div>';
 
     document.getElementById('cal-money-link').addEventListener('click', () => goToMoneyForDate(selectedDate));
+    document.getElementById('cal-memo-link').addEventListener('click', () => goToMemoForDate(selectedDate));
 
     panel.querySelectorAll('.cal-event-del').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -958,13 +1027,20 @@
     document.getElementById('money-next').addEventListener('click', () => { moneyCursor.setMonth(moneyCursor.getMonth()+1); moneyFocusDate = null; renderMoneyView(); });
     document.getElementById('money-today').addEventListener('click', () => { moneyCursor = new Date(); moneyCursor.setDate(1); moneyFocusDate = null; renderMoneyView(); });
     wrap.querySelectorAll('.money-type-btn').forEach(btn => {
-      btn.addEventListener('click', () => { pendingType = btn.getAttribute('data-type'); renderMoneyView(); });
+      btn.addEventListener('click', () => {
+        pendingType = btn.getAttribute('data-type');
+        wrap.querySelectorAll('.money-type-btn').forEach(b => {
+          b.classList.toggle('selected', b.getAttribute('data-type') === pendingType);
+        });
+      });
     });
     wrap.querySelectorAll('.money-method-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const key = btn.getAttribute('data-method');
         pendingMethod = (pendingMethod === key) ? '' : key;
-        renderMoneyView();
+        wrap.querySelectorAll('.money-method-btn').forEach(b => {
+          b.classList.toggle('selected', b.getAttribute('data-method') === pendingMethod);
+        });
       });
     });
     wrap.querySelectorAll('.money-row').forEach(row => {
@@ -1048,6 +1124,16 @@
     renderMoneyView();
   }
 
+  function goToMemoForDate(dateStr){
+    memoFocusDate = dateStr;
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    const memoBtn = document.querySelector('.nav-btn[data-view="memo"]');
+    if(memoBtn) memoBtn.classList.add('active');
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('view-memo').classList.add('active');
+    renderList(searchInput.value);
+  }
+
   /* ================= ナビゲーション切り替え ================= */
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1058,6 +1144,7 @@
       document.getElementById('view-' + view).classList.add('active');
       if(view === 'calendar') renderCalendarView();
       if(view === 'money'){ moneyFocusDate = null; renderMoneyView(); }
+      if(view === 'memo'){ memoFocusDate = null; renderList(searchInput.value); }
     });
   });
 })();
