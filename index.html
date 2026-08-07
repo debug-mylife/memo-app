@@ -181,6 +181,17 @@
   .cal-nav-btn:hover{border-color:var(--moss); color:var(--moss-dark);}
   .cal-today-btn{padding:7px 12px; border:1px solid var(--line); background:var(--paper-raised); border-radius:7px; cursor:pointer; font-family:inherit; font-size:12.5px; color:var(--ink-soft);}
   .cal-today-btn:hover{border-color:var(--moss); color:var(--moss-dark);}
+  .cal-share-btn{
+    display:flex; align-items:center; gap:6px; padding:7px 12px; border:1px solid var(--line);
+    background:var(--paper-raised); border-radius:7px; cursor:pointer; font-family:inherit; font-size:12.5px; color:var(--ink-soft);
+  }
+  .cal-share-btn svg{width:14px;height:14px; stroke:currentColor;}
+  .cal-share-btn:hover{border-color:var(--moss); color:var(--moss-dark);}
+  .cal-share-btn.active{background:#E7EDE2; border-color:var(--moss); color:var(--moss-dark);}
+  .share-code-box{
+    font-family:'IBM Plex Mono', monospace; font-size:20px; letter-spacing:2px; text-align:center;
+    background:var(--paper); border:1px dashed var(--moss); border-radius:8px; padding:12px; margin:6px 0; color:var(--moss-dark);
+  }
   .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); border-top:1px solid var(--line); border-left:1px solid var(--line); background:var(--paper-raised); border-radius:8px; overflow:hidden; box-shadow:var(--shadow);}
   .cal-weekday{padding:8px 0; text-align:center; font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-soft); border-right:1px solid var(--line); border-bottom:1px solid var(--line); background:var(--paper-dim);}
   .cal-weekday.sun{color:var(--danger);}
@@ -404,6 +415,20 @@
   </div>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyDJSYbzZV3bMNcKo2fr4xitVQfRC8Qi3oE",
+    authDomain: "lifelog-family-ebbcd.firebaseapp.com",
+    projectId: "lifelog-family-ebbcd",
+    storageBucket: "lifelog-family-ebbcd.firebasestorage.app",
+    messagingSenderId: "60138478596",
+    appId: "1:60138478596:web:6916f98a48bb0466fba951"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+</script>
 <script>
 (function(){
   /* ================= 共通ユーティリティ ================= */
@@ -710,12 +735,16 @@
 
   /* ================= カレンダー ================= */
   const EVENTS_KEY = 'memoApp.events.v1';
+  const FAMILY_CODE_KEY = 'memoApp.familyCode';
   const WEEKDAYS = ['日','月','火','水','木','金','土'];
   let events = loadEvents();
   let calCursor = new Date(); calCursor.setDate(1);
   let selectedDate = toDateStr(new Date());
   let pendingColor = SPINE_COLORS[0];
   let colorEditingId = null;
+  let familyCode = localStorage.getItem(FAMILY_CODE_KEY) || '';
+  let unsubscribeEvents = null;
+  let cloudSynced = false;
 
   function loadEvents(){
     try{ const raw = localStorage.getItem(EVENTS_KEY); if(!raw) return []; const p = JSON.parse(raw); return Array.isArray(p)?p:[]; }
@@ -728,6 +757,77 @@
   function toDateStr(d){ return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
   function eventsOn(dateStr){
     return events.filter(e => e.date === dateStr).sort((a,b) => (a.time||'99:99').localeCompare(b.time||'99:99'));
+  }
+
+  function familyEventsRef(){
+    return db.collection('families').doc(familyCode).collection('events');
+  }
+
+  function startCloudSync(){
+    if(unsubscribeEvents) unsubscribeEvents();
+    cloudSynced = false;
+    unsubscribeEvents = familyEventsRef().onSnapshot(
+      (snapshot) => {
+        events = snapshot.docs.map(doc => Object.assign({id: doc.id}, doc.data()));
+        cloudSynced = true;
+        persistEvents();
+        const activeView = document.querySelector('.view.active');
+        if(activeView && activeView.id === 'view-calendar') renderCalendarView();
+      },
+      (err) => {
+        console.error('共有カレンダーの同期に失敗しました', err);
+      }
+    );
+  }
+
+  function stopCloudSync(){
+    if(unsubscribeEvents){ unsubscribeEvents(); unsubscribeEvents = null; }
+    cloudSynced = false;
+  }
+
+  async function migrateLocalEventsToCloud(){
+    const existing = await familyEventsRef().get();
+    const existingIds = new Set(existing.docs.map(d => d.id));
+    const localOnly = events.filter(e => !existingIds.has(e.id));
+    for(const ev of localOnly){
+      const copy = Object.assign({}, ev);
+      const id = copy.id; delete copy.id;
+      await familyEventsRef().doc(id).set(copy);
+    }
+    return localOnly.length;
+  }
+
+  // 家族コードが設定済みなら、起動時に共有カレンダーへ接続する
+  if(familyCode){ startCloudSync(); }
+
+  async function addEvent(eventObj){
+    if(familyCode){
+      const id = eventObj.id; const copy = Object.assign({}, eventObj); delete copy.id;
+      await familyEventsRef().doc(id).set(copy);
+      // onSnapshotが更新を反映するので、ここでのローカル操作は不要
+    } else {
+      events.push(eventObj);
+      persistEvents();
+      renderCalendarView();
+    }
+  }
+  async function removeEvent(id){
+    if(familyCode){
+      await familyEventsRef().doc(id).delete();
+    } else {
+      events = events.filter(e => e.id !== id);
+      persistEvents();
+      renderCalendarView();
+    }
+  }
+  async function changeEventColor(id, color){
+    if(familyCode){
+      await familyEventsRef().doc(id).update({color: color});
+    } else {
+      const ev = events.find(e => e.id === id);
+      if(ev){ ev.color = color; persistEvents(); }
+      renderCalendarView();
+    }
   }
 
   function renderCalendarView(){
@@ -774,6 +874,10 @@
           '<div class="cal-title">' + year + '年 ' + (month+1) + '月</div>' +
           '<button class="cal-nav-btn" id="cal-next">›</button>' +
           '<button class="cal-today-btn" id="cal-today">今日</button>' +
+          '<button class="cal-share-btn' + (familyCode ? ' active' : '') + '" id="cal-share-btn" title="家族と共有">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
+            (familyCode ? '共有中' : '共有設定') +
+          '</button>' +
         '</div>' +
         '<div class="cal-grid">' + weekdayHtml + cellsHtml + '</div>' +
       '</div>' +
@@ -782,6 +886,7 @@
     document.getElementById('cal-prev').addEventListener('click', () => { calCursor.setMonth(calCursor.getMonth()-1); renderCalendarView(); });
     document.getElementById('cal-next').addEventListener('click', () => { calCursor.setMonth(calCursor.getMonth()+1); renderCalendarView(); });
     document.getElementById('cal-today').addEventListener('click', () => { calCursor = new Date(); calCursor.setDate(1); selectedDate = todayStr; renderCalendarView(); });
+    document.getElementById('cal-share-btn').addEventListener('click', openShareModal);
     wrap.querySelectorAll('.cal-day').forEach(el => {
       el.addEventListener('click', () => { selectedDate = el.getAttribute('data-date'); colorEditingId = null; renderCalendarView(); });
     });
@@ -847,10 +952,7 @@
     document.getElementById('cal-memo-link').addEventListener('click', () => goToMemoForDate(selectedDate));
 
     panel.querySelectorAll('.cal-event-del').forEach(btn => {
-      btn.addEventListener('click', () => {
-        events = events.filter(e => e.id !== btn.getAttribute('data-id'));
-        persistEvents(); renderCalendarView();
-      });
+      btn.addEventListener('click', () => { removeEvent(btn.getAttribute('data-id')); });
     });
     panel.querySelectorAll('.cal-event-dot').forEach(dot => {
       dot.addEventListener('click', () => {
@@ -863,10 +965,8 @@
       sw.addEventListener('click', () => {
         const row = sw.closest('.cal-edit-swatches');
         const id = row.getAttribute('data-id');
-        const ev = events.find(e => e.id === id);
-        if(ev){ ev.color = sw.getAttribute('data-color'); persistEvents(); }
         colorEditingId = null;
-        renderCalendarView();
+        changeEventColor(id, sw.getAttribute('data-color'));
       });
     });
     panel.querySelectorAll('#cal-color-row .spine-swatch').forEach(sw => {
@@ -881,15 +981,75 @@
     const timeEl = document.getElementById('cal-new-time');
     const title = titleEl.value.trim();
     if(!title){ titleEl.focus(); return; }
-    events.push({
+    addEvent({
       id: Date.now().toString(36) + Math.random().toString(36).slice(2,8),
       date: selectedDate,
       time: timeEl.value || null,
       title: title,
       color: pendingColor
     });
-    persistEvents();
+  }
+
+  function generateFamilyCode(){
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789'; // 紛らわしい文字(0/o, 1/l/iなど)を除外
+    let code = '';
+    for(let i=0;i<10;i++) code += chars[Math.floor(Math.random()*chars.length)];
+    return code;
+  }
+
+  function openShareModal(){
+    const rows = familyCode
+      ? '<p class="modal-note" style="margin-top:0;">現在、共有コードでカレンダーが同期されています。</p>' +
+        '<div class="share-code-box">' + escapeHtml(familyCode) + '</div>' +
+        '<p class="modal-note">このコードを知っている家族なら、誰でも予定を追加・編集できます。他の端末で同じコードを入力すれば、同じカレンダーを見られます。</p>'
+      : '<p class="modal-note" style="margin-top:0;">家族と同じカレンダーを見るには、同じ「共有コード」を使います。</p>' +
+        '<input type="text" id="share-code-input" placeholder="家族から受け取ったコードを入力" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-family:monospace; font-size:14px; margin-bottom:10px;">' +
+        '<button type="button" class="modal-btn" id="share-generate-btn" style="width:100%;">新しく共有カレンダーを作る(コードを発行)</button>';
+
+    const overlay = openModal(familyCode ? '共有設定' : 'カレンダーを家族と共有', rows, familyCode ? '閉じる' : '参加する', async (ov) => {
+      if(familyCode) return; // 「閉じる」のみ
+      const input = ov.querySelector('#share-code-input');
+      const code = input.value.trim().toLowerCase();
+      if(!code){ return; }
+      await joinFamilyCode(code);
+    });
+
+    if(!familyCode){
+      overlay.querySelector('#share-generate-btn').addEventListener('click', async () => {
+        const newCode = generateFamilyCode();
+        closeModal(overlay);
+        await joinFamilyCode(newCode);
+      });
+    } else {
+      const leaveBtn = document.createElement('button');
+      leaveBtn.className = 'modal-btn';
+      leaveBtn.textContent = '共有をやめる(ローカルのみに戻す)';
+      leaveBtn.addEventListener('click', () => {
+        stopCloudSync();
+        familyCode = '';
+        localStorage.removeItem(FAMILY_CODE_KEY);
+        events = loadEvents();
+        overlay.remove();
+        renderCalendarView();
+      });
+      overlay.querySelector('.modal-actions').prepend(leaveBtn);
+    }
+  }
+
+  async function joinFamilyCode(code){
+    const localCount = events.length;
+    familyCode = code;
+    localStorage.setItem(FAMILY_CODE_KEY, code);
+    let migratedCount = 0;
+    if(localCount > 0){
+      try{ migratedCount = await migrateLocalEventsToCloud(); }
+      catch(e){ console.error('予定のアップロードに失敗しました', e); }
+    }
+    startCloudSync();
     renderCalendarView();
+    if(migratedCount > 0){
+      alert('共有カレンダーに接続しました。今まであった予定' + migratedCount + '件をアップロードしました。');
+    }
   }
 
   /* ================= 家計簿 ================= */
@@ -1151,3 +1311,4 @@
 </script>
 </body>
 </html>
+
