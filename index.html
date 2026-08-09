@@ -350,6 +350,7 @@
   .modal-checkbox-row input{width:16px;height:16px; accent-color:var(--moss); flex-shrink:0;}
   .modal-count{color:var(--ink-soft); font-size:12px;}
   .modal-note{font-size:11.5px; color:var(--ink-soft); margin:10px 0 0; line-height:1.6;}
+  .modal-inline-link{background:none; border:none; cursor:pointer; color:var(--slate); font-family:inherit; font-size:11.5px; text-decoration:underline; padding:0;}
   .modal-actions{display:flex; gap:8px; margin-top:18px; justify-content:flex-end;}
   .modal-btn{padding:8px 16px; border-radius:7px; font-family:inherit; font-size:13px; cursor:pointer; border:1px solid var(--line); background:var(--paper); color:var(--ink-soft);}
   .modal-btn:hover{border-color:var(--moss); color:var(--moss-dark);}
@@ -1083,6 +1084,10 @@
         ) +
         '<p class="modal-note" style="margin-top:0;">共有コードが設定されています。予定ごとに「家族と共有する」を選んだものだけが、下のコードを知っている家族と同期されます。</p>' +
         '<div class="share-code-box">' + escapeHtml(familyCode) + '</div>' +
+        (needsNicknameRegistration ? '' :
+          '<p class="modal-note" style="margin:0 0 4px;">あなたの呼び名: <strong>' + escapeHtml(savedNickname) + '</strong> ' +
+          '<button type="button" id="share-edit-nickname-btn" class="modal-inline-link">変更する</button></p>'
+        ) +
         '<div id="share-member-count" class="share-member-count">読み込み中…</div>' +
         '<div id="share-member-list" class="share-member-list"></div>' +
         '<p class="modal-note">共有していない予定は、これまで通りこの端末だけに残ります。</p>'
@@ -1134,6 +1139,19 @@
         });
       } else {
         refreshMemberList();
+        const editBtn = overlay.querySelector('#share-edit-nickname-btn');
+        if(editBtn){
+          editBtn.addEventListener('click', async () => {
+            const next = prompt('新しい呼び名を入力してください', savedNickname);
+            if(next === null) return;
+            const trimmed = next.trim();
+            if(!trimmed) return;
+            localStorage.setItem(NICKNAME_KEY, trimmed);
+            await registerMember(trimmed);
+            closeModal(overlay);
+            openShareModal();
+          });
+        }
       }
 
       const leaveBtn = document.createElement('button');
