@@ -1072,8 +1072,16 @@
 
   function openShareModal(){
     const savedNickname = localStorage.getItem(NICKNAME_KEY) || '';
+    const needsNicknameRegistration = !!familyCode && !savedNickname;
+
     const rows = familyCode
-      ? '<p class="modal-note" style="margin-top:0;">共有コードが設定されています。予定ごとに「家族と共有する」を選んだものだけが、下のコードを知っている家族と同期されます。</p>' +
+      ? (needsNicknameRegistration
+          ? '<p class="modal-note" style="margin-top:0;">まだあなたの呼び名が登録されていません。人数に数えられるように、呼び名を登録してください。</p>' +
+            '<input type="text" id="share-nickname-input" placeholder="あなたの呼び名(例: お父さん)" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-family:inherit; font-size:14px; margin-bottom:10px;">' +
+            '<button type="button" class="modal-btn primary" id="share-register-btn" style="width:100%; margin-bottom:14px;">この呼び名で登録する</button>'
+          : ''
+        ) +
+        '<p class="modal-note" style="margin-top:0;">共有コードが設定されています。予定ごとに「家族と共有する」を選んだものだけが、下のコードを知っている家族と同期されます。</p>' +
         '<div class="share-code-box">' + escapeHtml(familyCode) + '</div>' +
         '<div id="share-member-count" class="share-member-count">読み込み中…</div>' +
         '<div id="share-member-list" class="share-member-list"></div>' +
@@ -1092,15 +1100,7 @@
       await joinFamilyCode(code, nickname);
     });
 
-    if(!familyCode){
-      overlay.querySelector('#share-generate-btn').addEventListener('click', async () => {
-        const nickname = overlay.querySelector('#share-nickname-input').value.trim();
-        if(!nickname){ alert('呼び名を入力してください。'); return; }
-        const newCode = generateFamilyCode();
-        closeModal(overlay);
-        await joinFamilyCode(newCode, nickname);
-      });
-    } else {
+    function refreshMemberList(){
       fetchMembers().then(members => {
         const countEl = overlay.querySelector('#share-member-count');
         const listEl = overlay.querySelector('#share-member-list');
@@ -1112,12 +1112,36 @@
         const countEl = overlay.querySelector('#share-member-count');
         if(countEl) countEl.textContent = '人数を取得できませんでした';
       });
+    }
+
+    if(!familyCode){
+      overlay.querySelector('#share-generate-btn').addEventListener('click', async () => {
+        const nickname = overlay.querySelector('#share-nickname-input').value.trim();
+        if(!nickname){ alert('呼び名を入力してください。'); return; }
+        const newCode = generateFamilyCode();
+        closeModal(overlay);
+        await joinFamilyCode(newCode, nickname);
+      });
+    } else {
+      if(needsNicknameRegistration){
+        overlay.querySelector('#share-register-btn').addEventListener('click', async () => {
+          const nickname = overlay.querySelector('#share-nickname-input').value.trim();
+          if(!nickname){ alert('呼び名を入力してください。'); return; }
+          localStorage.setItem(NICKNAME_KEY, nickname);
+          await registerMember(nickname);
+          closeModal(overlay);
+          openShareModal();
+        });
+      } else {
+        refreshMemberList();
+      }
 
       const leaveBtn = document.createElement('button');
       leaveBtn.className = 'modal-btn';
       leaveBtn.textContent = '共有をやめる(ローカルのみに戻す)';
       leaveBtn.addEventListener('click', async () => {
         try{ await familyMembersRef().doc(getMemberId()).delete(); }catch(e){ console.error(e); }
+        localStorage.removeItem(NICKNAME_KEY);
         stopCloudSync();
         familyCode = '';
         localStorage.removeItem(FAMILY_CODE_KEY);
@@ -1396,4 +1420,5 @@
 </script>
 </body>
 </html>
+
 
