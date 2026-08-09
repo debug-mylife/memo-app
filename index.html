@@ -192,6 +192,12 @@
     font-family:'IBM Plex Mono', monospace; font-size:20px; letter-spacing:2px; text-align:center;
     background:var(--paper); border:1px dashed var(--moss); border-radius:8px; padding:12px; margin:6px 0; color:var(--moss-dark);
   }
+  .share-member-count{font-size:12.5px; color:var(--moss-dark); font-weight:500; margin:10px 0 8px;}
+  .share-member-list{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:4px;}
+  .share-member-chip{
+    background:var(--paper); border:1px solid var(--line); border-radius:20px; padding:4px 11px;
+    font-size:12px; color:var(--ink);
+  }
   .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); border-top:1px solid var(--line); border-left:1px solid var(--line); background:var(--paper-raised); border-radius:8px; overflow:hidden; box-shadow:var(--shadow);}
   .cal-weekday{padding:8px 0; text-align:center; font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-soft); border-right:1px solid var(--line); border-bottom:1px solid var(--line); background:var(--paper-dim);}
   .cal-weekday.sun{color:var(--danger);}
@@ -228,6 +234,16 @@
   .cal-event-time{font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:var(--ink-soft);}
   .cal-event-title{font-size:13px; color:var(--ink); word-break:break-word;}
   .cal-event-del{background:none; border:none; cursor:pointer; color:var(--ink-soft); padding:2px;}
+  .cal-event-share-toggle{background:none; border:none; cursor:pointer; color:var(--line); padding:2px; flex-shrink:0;}
+  .cal-event-share-toggle svg{width:14px;height:14px; stroke:currentColor;}
+  .cal-event-share-toggle:hover{color:var(--ink-soft);}
+  .cal-event-share-toggle.shared{color:var(--moss);}
+  .cal-event-share-toggle.shared:hover{color:var(--moss-dark);}
+  .cal-share-toggle-row{
+    display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-soft); cursor:pointer;
+  }
+  .cal-share-toggle-row input{width:15px;height:15px; accent-color:var(--moss);}
+  .cal-share-toggle-row.disabled{opacity:0.55; cursor:default;}
   .cal-event-del:hover{color:var(--danger);}
   .cal-add-form{margin-top:14px; display:flex; flex-direction:column; gap:8px;}
   .cal-add-form input[type=text], .cal-add-form input[type=time]{padding:7px 9px; border:1px solid var(--line); border-radius:7px; font-family:inherit; font-size:13px; outline:none; background:var(--paper);}
@@ -736,41 +752,72 @@
   /* ================= カレンダー ================= */
   const EVENTS_KEY = 'memoApp.events.v1';
   const FAMILY_CODE_KEY = 'memoApp.familyCode';
+  const NICKNAME_KEY = 'memoApp.nickname';
+  const MEMBER_ID_KEY = 'memoApp.memberId';
   const WEEKDAYS = ['日','月','火','水','木','金','土'];
-  let events = loadEvents();
+  let localEvents = loadEvents();
+  let cloudEvents = [];
   let calCursor = new Date(); calCursor.setDate(1);
   let selectedDate = toDateStr(new Date());
   let pendingColor = SPINE_COLORS[0];
+  let pendingShared = false;
   let colorEditingId = null;
   let familyCode = localStorage.getItem(FAMILY_CODE_KEY) || '';
   let unsubscribeEvents = null;
-  let cloudSynced = false;
 
   function loadEvents(){
     try{ const raw = localStorage.getItem(EVENTS_KEY); if(!raw) return []; const p = JSON.parse(raw); return Array.isArray(p)?p:[]; }
     catch(e){ console.error('予定の読み込みに失敗しました', e); return []; }
   }
   function persistEvents(){
-    try{ localStorage.setItem(EVENTS_KEY, JSON.stringify(events)); return true; }
+    try{ localStorage.setItem(EVENTS_KEY, JSON.stringify(localEvents)); return true; }
     catch(e){ console.error('予定の保存に失敗しました', e); alert('保存に失敗しました。ブラウザの保存容量が不足している可能性があります。'); return false; }
   }
   function toDateStr(d){ return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()); }
+  function allEvents(){
+    return localEvents.map(e => Object.assign({}, e, {shared:false}))
+      .concat(cloudEvents.map(e => Object.assign({}, e, {shared:true})));
+  }
   function eventsOn(dateStr){
-    return events.filter(e => e.date === dateStr).sort((a,b) => (a.time||'99:99').localeCompare(b.time||'99:99'));
+    return allEvents().filter(e => e.date === dateStr).sort((a,b) => (a.time||'99:99').localeCompare(b.time||'99:99'));
+  }
+  function findEvent(id){
+    return allEvents().find(e => e.id === id);
   }
 
   function familyEventsRef(){
     return db.collection('families').doc(familyCode).collection('events');
   }
+  function familyMembersRef(){
+    return db.collection('families').doc(familyCode).collection('members');
+  }
+  function getMemberId(){
+    let id = localStorage.getItem(MEMBER_ID_KEY);
+    if(!id){
+      id = Date.now().toString(36) + Math.random().toString(36).slice(2,10);
+      localStorage.setItem(MEMBER_ID_KEY, id);
+    }
+    return id;
+  }
+  async function registerMember(nickname){
+    if(!familyCode) return;
+    try{
+      await familyMembersRef().doc(getMemberId()).set({
+        nickname: nickname,
+        joinedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    }catch(e){ console.error('メンバー登録に失敗しました', e); }
+  }
+  async function fetchMembers(){
+    const snap = await familyMembersRef().get();
+    return snap.docs.map(d => Object.assign({id: d.id}, d.data()));
+  }
 
   function startCloudSync(){
     if(unsubscribeEvents) unsubscribeEvents();
-    cloudSynced = false;
     unsubscribeEvents = familyEventsRef().onSnapshot(
       (snapshot) => {
-        events = snapshot.docs.map(doc => Object.assign({id: doc.id}, doc.data()));
-        cloudSynced = true;
-        persistEvents();
+        cloudEvents = snapshot.docs.map(doc => Object.assign({id: doc.id}, doc.data()));
         const activeView = document.querySelector('.view.active');
         if(activeView && activeView.id === 'view-calendar') renderCalendarView();
       },
@@ -782,52 +829,63 @@
 
   function stopCloudSync(){
     if(unsubscribeEvents){ unsubscribeEvents(); unsubscribeEvents = null; }
-    cloudSynced = false;
-  }
-
-  async function migrateLocalEventsToCloud(){
-    const existing = await familyEventsRef().get();
-    const existingIds = new Set(existing.docs.map(d => d.id));
-    const localOnly = events.filter(e => !existingIds.has(e.id));
-    for(const ev of localOnly){
-      const copy = Object.assign({}, ev);
-      const id = copy.id; delete copy.id;
-      await familyEventsRef().doc(id).set(copy);
-    }
-    return localOnly.length;
+    cloudEvents = [];
   }
 
   // 家族コードが設定済みなら、起動時に共有カレンダーへ接続する
-  if(familyCode){ startCloudSync(); }
+  if(familyCode){
+    startCloudSync();
+    const savedNickname = localStorage.getItem(NICKNAME_KEY);
+    if(savedNickname) registerMember(savedNickname);
+  }
 
-  async function addEvent(eventObj){
-    if(familyCode){
+  async function addEvent(eventObj, shared){
+    if(shared && familyCode){
       const id = eventObj.id; const copy = Object.assign({}, eventObj); delete copy.id;
       await familyEventsRef().doc(id).set(copy);
-      // onSnapshotが更新を反映するので、ここでのローカル操作は不要
+      // onSnapshotが更新を反映する
     } else {
-      events.push(eventObj);
+      localEvents.push(eventObj);
       persistEvents();
       renderCalendarView();
     }
   }
-  async function removeEvent(id){
-    if(familyCode){
+  async function removeEvent(id, shared){
+    if(shared){
       await familyEventsRef().doc(id).delete();
     } else {
-      events = events.filter(e => e.id !== id);
+      localEvents = localEvents.filter(e => e.id !== id);
       persistEvents();
       renderCalendarView();
     }
   }
-  async function changeEventColor(id, color){
-    if(familyCode){
+  async function changeEventColor(id, shared, color){
+    if(shared){
       await familyEventsRef().doc(id).update({color: color});
     } else {
-      const ev = events.find(e => e.id === id);
+      const ev = localEvents.find(e => e.id === id);
       if(ev){ ev.color = color; persistEvents(); }
       renderCalendarView();
     }
+  }
+  async function toggleEventShare(id){
+    const ev = findEvent(id);
+    if(!ev) return;
+    if(!ev.shared){
+      if(!familyCode){ openShareModal(); return; }
+      const copy = Object.assign({}, ev);
+      delete copy.id; delete copy.shared;
+      await familyEventsRef().doc(ev.id).set(copy);
+      localEvents = localEvents.filter(e => e.id !== ev.id);
+      persistEvents();
+    } else {
+      const copy = Object.assign({}, ev);
+      delete copy.shared;
+      localEvents.push(copy);
+      persistEvents();
+      await familyEventsRef().doc(ev.id).delete();
+    }
+    renderCalendarView();
   }
 
   function renderCalendarView(){
@@ -857,7 +915,7 @@
       const isToday = dStr === todayStr;
       const isSelected = dStr === selectedDate;
       let chipsHtml = dayEvents.slice(0,3).map(e =>
-        '<div class="cal-event-chip" style="background:'+e.color+'">' + (e.time ? e.time+' ' : '') + escapeHtml(e.title) + '</div>'
+        '<div class="cal-event-chip" style="background:'+e.color+'">' + (e.shared ? '👪 ' : '') + (e.time ? e.time+' ' : '') + escapeHtml(e.title) + '</div>'
       ).join('');
       if(dayEvents.length > 3) chipsHtml += '<div class="cal-more">+' + (dayEvents.length-3) + '件</div>';
       cellsHtml += '<div class="cal-day' + (outside?' outside':'') + (isToday?' today':'') + (isSelected?' selected':'') + '" data-date="'+dStr+'">' +
@@ -906,7 +964,7 @@
       ? '<div class="cal-empty">この日の予定はありません。</div>'
       : dayEvents.map(e => {
           const editingSwatches = colorEditingId === e.id
-            ? '<div class="cal-color-row cal-edit-swatches" data-id="'+e.id+'">' +
+            ? '<div class="cal-color-row cal-edit-swatches" data-id="'+e.id+'" data-shared="'+e.shared+'">' +
                 SPINE_COLORS.map(c => '<div class="spine-swatch' + (c===e.color?' selected':'') + '" style="background:'+c+'" data-color="'+c+'"></div>').join('') +
               '</div>'
             : '';
@@ -917,7 +975,10 @@
                 (e.time ? '<div class="cal-event-time">' + e.time + '</div>' : '') +
                 '<div class="cal-event-title">' + escapeHtml(e.title) + '</div>' +
               '</div>' +
-              '<button class="cal-event-del" data-id="'+e.id+'" title="削除"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
+              '<button class="cal-event-share-toggle' + (e.shared ? ' shared' : '') + '" data-id="'+e.id+'" title="' + (e.shared ? '家族と共有中(クリックでローカルのみに戻す)' : 'この予定は自分だけ(クリックで家族と共有)') + '">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
+              '</button>' +
+              '<button class="cal-event-del" data-id="'+e.id+'" data-shared="'+e.shared+'" title="削除"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
             '</div>' +
             editingSwatches +
           '</div>';
@@ -945,6 +1006,10 @@
         '<input type="text" id="cal-new-title" placeholder="予定を入力">' +
         '<div class="cal-time-row"><label>時刻</label><input type="time" id="cal-new-time"></div>' +
         '<div class="cal-color-row" id="cal-color-row">' + colorSwatches + '</div>' +
+        '<label class="cal-share-toggle-row' + (!familyCode ? ' disabled' : '') + '">' +
+          '<input type="checkbox" id="cal-new-shared"' + (pendingShared ? ' checked' : '') + (!familyCode ? ' disabled' : '') + '>' +
+          (familyCode ? '家族と共有する' : '家族と共有する(先に共有設定が必要です)') +
+        '</label>' +
         '<button class="cal-add-btn" id="cal-add-btn">追加</button>' +
       '</div>';
 
@@ -952,7 +1017,10 @@
     document.getElementById('cal-memo-link').addEventListener('click', () => goToMemoForDate(selectedDate));
 
     panel.querySelectorAll('.cal-event-del').forEach(btn => {
-      btn.addEventListener('click', () => { removeEvent(btn.getAttribute('data-id')); });
+      btn.addEventListener('click', () => { removeEvent(btn.getAttribute('data-id'), btn.getAttribute('data-shared') === 'true'); });
+    });
+    panel.querySelectorAll('.cal-event-share-toggle').forEach(btn => {
+      btn.addEventListener('click', () => toggleEventShare(btn.getAttribute('data-id')));
     });
     panel.querySelectorAll('.cal-event-dot').forEach(dot => {
       dot.addEventListener('click', () => {
@@ -965,13 +1033,18 @@
       sw.addEventListener('click', () => {
         const row = sw.closest('.cal-edit-swatches');
         const id = row.getAttribute('data-id');
+        const shared = row.getAttribute('data-shared') === 'true';
         colorEditingId = null;
-        changeEventColor(id, sw.getAttribute('data-color'));
+        changeEventColor(id, shared, sw.getAttribute('data-color'));
       });
     });
     panel.querySelectorAll('#cal-color-row .spine-swatch').forEach(sw => {
       sw.addEventListener('click', () => { pendingColor = sw.getAttribute('data-color'); renderPanel(); });
     });
+    const sharedCheckbox = document.getElementById('cal-new-shared');
+    if(sharedCheckbox){
+      sharedCheckbox.addEventListener('change', () => { pendingShared = sharedCheckbox.checked; });
+    }
     document.getElementById('cal-add-btn').addEventListener('click', addEventFromForm);
     document.getElementById('cal-new-title').addEventListener('keydown', e => { if(e.key === 'Enter') addEventFromForm(); });
   }
@@ -987,7 +1060,7 @@
       time: timeEl.value || null,
       title: title,
       color: pendingColor
-    });
+    }, pendingShared && !!familyCode);
   }
 
   function generateFamilyCode(){
@@ -998,37 +1071,56 @@
   }
 
   function openShareModal(){
+    const savedNickname = localStorage.getItem(NICKNAME_KEY) || '';
     const rows = familyCode
-      ? '<p class="modal-note" style="margin-top:0;">現在、共有コードでカレンダーが同期されています。</p>' +
+      ? '<p class="modal-note" style="margin-top:0;">共有コードが設定されています。予定ごとに「家族と共有する」を選んだものだけが、下のコードを知っている家族と同期されます。</p>' +
         '<div class="share-code-box">' + escapeHtml(familyCode) + '</div>' +
-        '<p class="modal-note">このコードを知っている家族なら、誰でも予定を追加・編集できます。他の端末で同じコードを入力すれば、同じカレンダーを見られます。</p>'
-      : '<p class="modal-note" style="margin-top:0;">家族と同じカレンダーを見るには、同じ「共有コード」を使います。</p>' +
+        '<div id="share-member-count" class="share-member-count">読み込み中…</div>' +
+        '<div id="share-member-list" class="share-member-list"></div>' +
+        '<p class="modal-note">共有していない予定は、これまで通りこの端末だけに残ります。</p>'
+      : '<p class="modal-note" style="margin-top:0;">家族と予定を共有するための「共有コード」を用意します。共有コードを設定したあとも、予定ごとに共有するかどうかを選べます。</p>' +
+        '<input type="text" id="share-nickname-input" placeholder="あなたの呼び名(例: お父さん)" value="' + escapeHtml(savedNickname) + '" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-family:inherit; font-size:14px; margin-bottom:10px;">' +
         '<input type="text" id="share-code-input" placeholder="家族から受け取ったコードを入力" style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:7px; font-family:monospace; font-size:14px; margin-bottom:10px;">' +
         '<button type="button" class="modal-btn" id="share-generate-btn" style="width:100%;">新しく共有カレンダーを作る(コードを発行)</button>';
 
     const overlay = openModal(familyCode ? '共有設定' : 'カレンダーを家族と共有', rows, familyCode ? '閉じる' : '参加する', async (ov) => {
       if(familyCode) return; // 「閉じる」のみ
-      const input = ov.querySelector('#share-code-input');
-      const code = input.value.trim().toLowerCase();
+      const nickname = ov.querySelector('#share-nickname-input').value.trim();
+      const code = ov.querySelector('#share-code-input').value.trim().toLowerCase();
+      if(!nickname){ alert('呼び名を入力してください。'); return; }
       if(!code){ return; }
-      await joinFamilyCode(code);
+      await joinFamilyCode(code, nickname);
     });
 
     if(!familyCode){
       overlay.querySelector('#share-generate-btn').addEventListener('click', async () => {
+        const nickname = overlay.querySelector('#share-nickname-input').value.trim();
+        if(!nickname){ alert('呼び名を入力してください。'); return; }
         const newCode = generateFamilyCode();
         closeModal(overlay);
-        await joinFamilyCode(newCode);
+        await joinFamilyCode(newCode, nickname);
       });
     } else {
+      fetchMembers().then(members => {
+        const countEl = overlay.querySelector('#share-member-count');
+        const listEl = overlay.querySelector('#share-member-list');
+        if(!countEl) return;
+        countEl.textContent = members.length + '人がこのカレンダーを見られます';
+        listEl.innerHTML = members.map(m => '<span class="share-member-chip">' + escapeHtml(m.nickname || '(名前未設定)') + '</span>').join('');
+      }).catch(e => {
+        console.error('メンバー一覧の取得に失敗しました', e);
+        const countEl = overlay.querySelector('#share-member-count');
+        if(countEl) countEl.textContent = '人数を取得できませんでした';
+      });
+
       const leaveBtn = document.createElement('button');
       leaveBtn.className = 'modal-btn';
       leaveBtn.textContent = '共有をやめる(ローカルのみに戻す)';
-      leaveBtn.addEventListener('click', () => {
+      leaveBtn.addEventListener('click', async () => {
+        try{ await familyMembersRef().doc(getMemberId()).delete(); }catch(e){ console.error(e); }
         stopCloudSync();
         familyCode = '';
         localStorage.removeItem(FAMILY_CODE_KEY);
-        events = loadEvents();
         overlay.remove();
         renderCalendarView();
       });
@@ -1036,20 +1128,13 @@
     }
   }
 
-  async function joinFamilyCode(code){
-    const localCount = events.length;
+  async function joinFamilyCode(code, nickname){
     familyCode = code;
     localStorage.setItem(FAMILY_CODE_KEY, code);
-    let migratedCount = 0;
-    if(localCount > 0){
-      try{ migratedCount = await migrateLocalEventsToCloud(); }
-      catch(e){ console.error('予定のアップロードに失敗しました', e); }
-    }
+    localStorage.setItem(NICKNAME_KEY, nickname);
     startCloudSync();
+    await registerMember(nickname);
     renderCalendarView();
-    if(migratedCount > 0){
-      alert('共有カレンダーに接続しました。今まであった予定' + migratedCount + '件をアップロードしました。');
-    }
   }
 
   /* ================= 家計簿 ================= */
@@ -1311,3 +1396,4 @@
 </script>
 </body>
 </html>
+
